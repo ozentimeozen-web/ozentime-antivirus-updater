@@ -1,69 +1,61 @@
 // Headless API gateway for serving individual Ozentime update files.
-// Place inside /api/check-update.js in your Vercel deployment.
+// Place inside /api/check-update.js or /pages/api/check-update.js in your Vercel deployment.
 
 export default async function handler(req, res) {
-  // Lock down to GET requests only
+  // Lock down endpoint to GET requests only
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
+  // --- CONFIGURATION ---
   const GITHUB_REPO_OWNER = 'YourGitHubUsername'; // Replace with your GitHub username
   const GITHUB_REPO_NAME = 'Ozentime';           // Replace with your repository name
-  const { file: requestedFile } = req.query;
+  const requestedFile = req.query.file;
 
   try {
-    const requestHeaders = {
+    const headers = {
       'User-Agent': 'Ozentime-Vercel-Gateway/1.0',
       'Accept': 'application/vnd.github.v3+json',
     };
 
     if (process.env.GITHUB_TOKEN) {
-      requestHeaders['Authorization'] = `Bearer ${process.env.GITHUB_TOKEN}`;
+      headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
     }
 
-    // Query GitHub's latest release endpoint
-    const ghResponse = await fetch(
-      `https://api.github.com/repos/\({GITHUB_REPO_OWNER}/\){GITHUB_REPO_NAME}/releases/latest`,
-      { headers: requestHeaders }
+    // Query GitHub's official REST API for the latest published release
+    const gh = await fetch(
+      `https://api.github.com/repos/${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}/releases/latest`,
+      { headers }
     );
 
-    if (!ghResponse.ok) {
-      return res.status(ghResponse.status).json({
-        error: 'Failed to query release metadata from GitHub',
-        status: ghResponse.status
-      });
+    if (!gh.ok) {
+      return res.status(gh.status).json({ error: 'Failed to query GitHub release' });
     }
 
-    const releaseData = await ghResponse.json();
+    const release = await gh.json();
 
-    // SCENARIO 1: If a specific file is requested, proxy and stream the asset directly
+    // SCENARIO 1: Stream specific file if requested by name
     if (requestedFile) {
-      const targetAsset = releaseData.assets.find(
-        (asset) => asset.name === requestedFile
-      );
-
-      if (!targetAsset) {
-        return res.status(404).json({ error: `File '${requestedFile}' not found in release.` });
+      const asset = (release.assets || []).find((a) => a.name === requestedFile);
+      if (!asset) {
+        return res.status(404).json({ error: 'File not in release' });
       }
 
-      // Download the asset from GitHub's redirect URL
-      const fileResponse = await fetch(targetAsset.browser_download_url);
-      if (!fileResponse.ok) {
-        return res.status(fileResponse.status).json({ error: 'Failed to stream file from GitHub' });
+      const file = await fetch(asset.browser_download_url);
+      if (!file.ok) {
+        return res.status(file.status).json({ error: 'Failed to stream file' });
       }
 
-      const fileBuffer = await fileResponse.arrayBuffer();
-
-      // Return as octet-stream for raw binary download
+      const buf = Buffer.from(await file.arrayBuffer());
       res.setHeader('Content-Type', 'application/octet-stream');
-      res.setHeader('Content-Disposition', `attachment; filename="${targetAsset.name}"`);
+      res.setHeader('Content-Disposition', `attachment; filename="${asset.name}"`);
       res.setHeader('Cache-Control', 's-maxage=600, stale-while-revalidate=120');
 
-      return res.status(200).send(Buffer.from(fileBuffer));
+      return res.status(200).send(buf);
     }
 
-    // SCENARIO 2: If no file is specified, return JSON listing all individual release files
-    const fileList = releaseData.assets.map((asset) => ({
+    // SCENARIO 2: Return file listing JSON for individual downloads into 'ozentime download'
+    const files = (release.assets || []).map((asset) => ({
       name: asset.name,
       size_bytes: asset.size,
       download_url: `/api/check-update?file=${encodeURIComponent(asset.name)}`
@@ -71,21 +63,17 @@ export default async function handler(req, res) {
 
     res.setHeader('Cache-Control', 's-maxage=600, stale-while-revalidate=120');
 
-    // Return pure JSON — NO HTML UI rendered
     return res.status(200).json({
       status: 'success',
-      latest_version: releaseData.tag_name,
-      published_at: releaseData.published_at,
+      latest_version: release.tag_name,
+      published_at: release.published_at,
       target_folder: 'ozentime download',
-      total_files: fileList.length,
-      files: fileList,
-      release_notes: releaseData.body || 'No release notes provided.'
+      total_files: files.length,
+      files,
+      release_notes: release.body || ''
     });
 
   } catch (error) {
-    return res.status(500).json({
-      error: 'Internal Gateway Error',
-      details: error.message
-    });
+    return res.status(500).json({ error: 'Internal Gateway Error' });
   }
 }
