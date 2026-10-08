@@ -4,8 +4,9 @@
 import crypto from 'crypto';
 
 // --- CONFIGURATION ---
-const GITHUB_REPO_OWNER = 'YourGitHubUsername'; // Replace with your GitHub username
-const GITHUB_REPO_NAME = 'Ozentime';           // Replace with your repository name
+// Set these in Vercel Environment Variables or replace the string fallbacks below
+const GITHUB_REPO_OWNER = process.env.GITHUB_REPO_OWNER || 'YourGitHubUsername';
+const GITHUB_REPO_NAME = process.env.GITHUB_REPO_NAME || 'Ozentime';
 
 // 16-byte key shared with C++ updater (Fallback: OzentimeUpdater1)
 const AES_KEY = Buffer.from(process.env.OZENTIME_AES_KEY || 'OzentimeUpdater1', 'utf8');
@@ -15,25 +16,19 @@ const AES_KEY = Buffer.from(process.env.OZENTIME_AES_KEY || 'OzentimeUpdater1', 
  * Binary Layout: [ 12-byte Nonce ] [ 16-byte Auth Tag ] [ Ciphertext ]
  */
 export function encryptLogPayload(plainTextData) {
-  // 12-byte random Nonce (IV) generated per write
   const iv = crypto.randomBytes(12);
-
   const cipher = crypto.createCipheriv('aes-128-gcm', AES_KEY, iv);
-
-  // Prepend mandatory header to plaintext
   const formattedInput = `OZEN_LOG_V1\n${plainTextData}`;
 
   let encrypted = cipher.update(formattedInput, 'utf8');
   encrypted = Buffer.concat([encrypted, cipher.final()]);
 
-  const authTag = cipher.getAuthTag(); // 16-byte Auth Tag
+  const authTag = cipher.getAuthTag();
 
-  // Pack binary sequence
   return Buffer.concat([iv, authTag, encrypted]);
 }
 
 export default async function handler(req, res) {
-  // Lock down endpoint to GET requests only
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
@@ -50,40 +45,34 @@ export default async function handler(req, res) {
       headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
     }
 
-    // SCENARIO 1: Serve a specific requested file via HTTP 302 Redirect
+    // Fetch latest release from GitHub API
+    const ghUrl = `https://api.github.com/repos/${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}/releases/latest`;
+    const gh = await fetch(ghUrl, { headers });
+
+    if (!gh.ok) {
+      const errorData = await gh.json().catch(() => ({}));
+      return res.status(gh.status).json({
+        error: 'Failed to query GitHub release',
+        github_status: gh.status,
+        github_message: errorData.message || 'Check repository visibility and release state'
+      });
+    }
+
+    const release = await gh.json();
+
+    // SCENARIO 1: Direct asset redirect by filename (e.g., version.txt)
     if (requestedFile) {
-      const gh = await fetch(
-        `https://api.github.com/repos/${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}/releases/latest`,
-        { headers }
-      );
-
-      if (!gh.ok) {
-        return res.status(gh.status).json({ error: 'Failed to query GitHub release' });
-      }
-
-      const release = await gh.json();
       const asset = (release.assets || []).find((a) => a.name === requestedFile);
 
       if (!asset) {
-        return res.status(404).json({ error: 'File not in release' });
+        return res.status(404).json({ error: `File '${requestedFile}' not found in release assets` });
       }
 
-      // 302 Redirect directly to GitHub CDN (bypasses Vercel payload limits & handles large files)
       res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=60');
       return res.redirect(302, asset.browser_download_url);
     }
 
-    // SCENARIO 2: Return file listing JSON for updater discovery
-    const gh = await fetch(
-      `https://api.github.com/repos/${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}/releases/latest`,
-      { headers }
-    );
-
-    if (!gh.ok) {
-      return res.status(gh.status).json({ error: 'Failed to query GitHub release' });
-    }
-
-    const release = await gh.json();
+    // SCENARIO 2: Return file manifest listing
     const files = (release.assets || []).map((asset) => ({
       name: asset.name,
       size_bytes: asset.size,
@@ -103,6 +92,6 @@ export default async function handler(req, res) {
     });
 
   } catch (error) {
-    return res.status(500).json({ error: 'Internal Gateway Error' });
+    return res.status(500).json({ error: 'Internal Gateway Error', details: error.message });
   }
 }
