@@ -1,0 +1,12 @@
+{
+  "rewrites": [
+    {
+      "source": "/version.txt",
+      "destination": "/api/check-update?file=version.txt"
+    },
+    {
+      "source": "/",
+      "destination": "/api/check-update"
+    }
+  ]
+}
