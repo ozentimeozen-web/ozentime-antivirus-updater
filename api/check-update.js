@@ -4,11 +4,11 @@
 import crypto from 'crypto';
 
 // --- CONFIGURATION ---
-// Set these in Vercel Environment Variables or replace the string fallbacks below
+// Fallback repo name updated to 'ozentime-antivirus-updater'
 const GITHUB_REPO_OWNER = process.env.GITHUB_REPO_OWNER || 'YourGitHubUsername';
-const GITHUB_REPO_NAME = process.env.GITHUB_REPO_NAME || 'Ozentime';
+const GITHUB_REPO_NAME = process.env.GITHUB_REPO_NAME || 'ozentime-antivirus-updater';
 
-// 16-byte key shared with C++ updater (Fallback: OzentimeUpdater1)
+// 16-byte static fallback key shared with the C++ updater
 const AES_KEY = Buffer.from(process.env.OZENTIME_AES_KEY || 'OzentimeUpdater1', 'utf8');
 
 /**
@@ -45,7 +45,7 @@ export default async function handler(req, res) {
       headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
     }
 
-    // Fetch latest release from GitHub API
+    // Query GitHub API for the latest published release
     const ghUrl = `https://api.github.com/repos/${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}/releases/latest`;
     const gh = await fetch(ghUrl, { headers });
 
@@ -68,11 +68,12 @@ export default async function handler(req, res) {
         return res.status(404).json({ error: `File '${requestedFile}' not found in release assets` });
       }
 
+      // 302 Redirect directly to GitHub CDN (bypasses Vercel payload limits)
       res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=60');
       return res.redirect(302, asset.browser_download_url);
     }
 
-    // SCENARIO 2: Return file manifest listing
+    // SCENARIO 2: Return file manifest listing for updater discovery
     const files = (release.assets || []).map((asset) => ({
       name: asset.name,
       size_bytes: asset.size,
