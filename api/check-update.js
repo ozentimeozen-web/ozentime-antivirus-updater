@@ -3,11 +3,6 @@
 
 import crypto from 'crypto';
 
-// --- CONFIGURATION ---
-// Fallback repo name updated to 'ozentime-antivirus-updater'
-const GITHUB_REPO_OWNER = process.env.GITHUB_REPO_OWNER || 'YourGitHubUsername';
-const GITHUB_REPO_NAME = process.env.GITHUB_REPO_NAME || 'ozentime-antivirus-updater';
-
 // 16-byte static fallback key shared with the C++ updater
 const AES_KEY = Buffer.from(process.env.OZENTIME_AES_KEY || 'OzentimeUpdater1', 'utf8');
 
@@ -33,7 +28,16 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
+  // Allow repository details to be passed dynamically via query or env vars
+  const repoOwner = req.query.owner || process.env.GITHUB_REPO_OWNER;
+  const repoName = req.query.repo || process.env.GITHUB_REPO_NAME || 'ozentime-antivirus-updater';
   const requestedFile = req.query.file;
+
+  if (!repoOwner) {
+    return res.status(400).json({
+      error: 'Missing GITHUB_REPO_OWNER environment variable or ?owner= query parameter.'
+    });
+  }
 
   try {
     const headers = {
@@ -45,14 +49,15 @@ export default async function handler(req, res) {
       headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
     }
 
-    // Query GitHub API for the latest published release
-    const ghUrl = `https://api.github.com/repos/${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}/releases/latest`;
+    // Dynamic GitHub API target
+    const ghUrl = `https://api.github.com/repos/${repoOwner}/${repoName}/releases/latest`;
     const gh = await fetch(ghUrl, { headers });
 
     if (!gh.ok) {
       const errorData = await gh.json().catch(() => ({}));
       return res.status(gh.status).json({
         error: 'Failed to query GitHub release',
+        target_repo: `${repoOwner}/${repoName}`,
         github_status: gh.status,
         github_message: errorData.message || 'Check repository visibility and release state'
       });
@@ -60,7 +65,7 @@ export default async function handler(req, res) {
 
     const release = await gh.json();
 
-    // SCENARIO 1: Direct asset redirect by filename (e.g., version.txt)
+    // SCENARIO 1: Direct asset redirect by filename
     if (requestedFile) {
       const asset = (release.assets || []).find((a) => a.name === requestedFile);
 
@@ -68,12 +73,11 @@ export default async function handler(req, res) {
         return res.status(404).json({ error: `File '${requestedFile}' not found in release assets` });
       }
 
-      // 302 Redirect directly to GitHub CDN (bypasses Vercel payload limits)
       res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=60');
       return res.redirect(302, asset.browser_download_url);
     }
 
-    // SCENARIO 2: Return file manifest listing for updater discovery
+    // SCENARIO 2: Return file manifest listing
     const files = (release.assets || []).map((asset) => ({
       name: asset.name,
       size_bytes: asset.size,
@@ -84,6 +88,7 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       status: 'success',
+      repository: `${repoOwner}/${repoName}`,
       latest_version: release.tag_name,
       published_at: release.published_at,
       target_folder: 'ozentime download',
